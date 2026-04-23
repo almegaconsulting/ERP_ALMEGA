@@ -1,65 +1,244 @@
-import Image from "next/image";
+import Link from 'next/link'
+import { supabase } from '@/lib/supabaseClient'
+import DashboardCanvasClient from './components/DashboardCanvasClient'
 
-export default function Home() {
+type KpiConfig = {
+  entity?: string
+  link?: string
+}
+
+type FilterRule = {
+  field?: string
+  operator?: string
+  value?: string | number | boolean
+}
+
+type ListConfig = {
+  entity?: string
+  limit?: number
+  link?: string
+  filters?: FilterRule[]
+}
+
+type DashboardWidgetRecord = {
+  id: string
+  title: string
+  widget_type: string
+  config_json: any
+  position_x: number | null
+  position_y: number | null
+  width: number | null
+  height: number | null
+  sort_order: number | null
+}
+
+type RenderedWidget =
+  | {
+      id: string
+      title: string
+      widgetType: 'kpi'
+      href: string
+      value: number
+    }
+  | {
+      id: string
+      title: string
+      widgetType: 'list'
+      href: string
+      items: {
+        id: string
+        name: string
+        stage: string | null
+        amount: number | null
+        currency_code: string | null
+        status: string | null
+      }[]
+    }
+
+/* =========================
+   UI
+========================= */
+
+function ModuleCard({
+  title,
+  description,
+  href,
+}: {
+  title: string
+  description: string
+  href: string
+}) {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <Link
+      href={href}
+      className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm hover:shadow-md transition"
+    >
+      <h2 className="text-xl font-semibold mb-2">{title}</h2>
+      <p className="text-gray-600">{description}</p>
+    </Link>
+  )
+}
+
+/* =========================
+   HELPERS
+========================= */
+
+async function getKpiValue(entity?: string): Promise<number> {
+  if (!entity) return 0
+
+  const { count } = await supabase
+    .from(entity)
+    .select('*', { count: 'exact', head: true })
+
+  return count ?? 0
+}
+
+function applyFilters(query: any, filters?: FilterRule[]) {
+  let q = query
+
+  for (const f of filters ?? []) {
+    if (!f.field || !f.operator) continue
+
+    const allowedFields = ['status', 'stage']
+    if (!allowedFields.includes(f.field)) continue
+
+    if (f.operator === 'eq') {
+      q = q.eq(f.field, f.value)
+    }
+  }
+
+  return q
+}
+
+async function getList(entity: string, config: ListConfig) {
+  let query = supabase
+    .from(entity)
+    .select('id, name, stage, amount, currency_code, status')
+    .order('created_at', { ascending: false })
+
+  query = applyFilters(query, config.filters)
+
+  const { data } = await query.limit(config.limit ?? 5)
+  return data ?? []
+}
+
+async function resolveDashboard() {
+  const { data } = await supabase
+    .from('dashboard_definitions')
+    .select('*')
+    .eq('code', 'sales_manager_dashboard')
+    .maybeSingle()
+
+  if (data) return data
+
+  const { data: fallback } = await supabase
+    .from('dashboard_definitions')
+    .select('*')
+    .eq('code', 'main_dashboard')
+    .maybeSingle()
+
+  return fallback ?? null
+}
+
+/* =========================
+   PAGE
+========================= */
+
+export default async function HomePage() {
+  const dashboard = await resolveDashboard()
+
+  const { data: widgets } = dashboard
+    ? await supabase
+        .from('dashboard_widgets')
+        .select('*')
+        .eq('dashboard_definition_id', dashboard.id)
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true })
+    : { data: [] }
+
+  const renderedWidgets: RenderedWidget[] = await Promise.all(
+    (widgets ?? []).map(async (w: DashboardWidgetRecord) => {
+      const config = w.config_json || {}
+
+      if (w.widget_type === 'kpi') {
+        const kpiConfig = config as KpiConfig
+
+        return {
+          id: w.id,
+          title: w.title,
+          widgetType: 'kpi' as const,
+          href: kpiConfig.link || '/',
+          value: await getKpiValue(kpiConfig.entity),
+        }
+      }
+
+      if (w.widget_type === 'list') {
+        const listConfig = config as ListConfig
+
+        return {
+          id: w.id,
+          title: w.title,
+          widgetType: 'list' as const,
+          href: listConfig.link || '/',
+          items: await getList(listConfig.entity || 'opportunities', listConfig),
+        }
+      }
+
+      return null
+    })
+  ).then((res) => res.filter(Boolean) as RenderedWidget[])
+
+  return (
+    <main>
+      <div className="mb-8">
+        <h1 className="text-4xl font-bold mb-3">ERP Almega</h1>
+        <p className="text-gray-700 text-lg">
+          Frontend connected to Supabase and ready to grow module by module.
+        </p>
+
+        {dashboard && (
+          <p className="text-sm text-gray-500 mt-2">
+            Active dashboard: {dashboard.name}
           </p>
+        )}
+      </div>
+
+      <section className="mb-10">
+        <h2 className="text-2xl font-semibold mb-4">Overview</h2>
+
+        {renderedWidgets.length === 0 ? (
+          <p className="text-gray-600">No widgets configured.</p>
+        ) : (
+          <DashboardCanvasClient widgets={renderedWidgets} />
+        )}
+      </section>
+
+      <section>
+        <h2 className="text-2xl font-semibold mb-4">Modules</h2>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <ModuleCard
+            title="Accounts"
+            description="Manage accounts"
+            href="/accounts"
+          />
+          <ModuleCard
+            title="Contacts"
+            description="Manage contacts"
+            href="/contacts"
+          />
+          <ModuleCard
+            title="Opportunities"
+            description="Pipeline"
+            href="/opportunities"
+          />
+          <ModuleCard
+            title="Projects"
+            description="Projects"
+            href="/projects"
+          />
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
-  );
+      </section>
+    </main>
+  )
 }
