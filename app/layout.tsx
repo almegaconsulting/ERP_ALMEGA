@@ -1,24 +1,4 @@
-import './globals.css'
-import Sidebar from './components/Sidebar'
-
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
-  return (
-    <html lang="en">
-      <body className="bg-gray-50">
-        {/* COLUMNA IZQUIERDA FIJA */}
-        <div className="fixed inset-y-0 left-0 w-64 bg-black">
-          <Sidebar />
-        </div>
-
-        {/* CONTENIDO PRINCIPAL */}
-        <main className="ml-64 min-h-screen p-8">
-          {children}
-        </main>
-      </body>
-    </html>
-  )
-}
+import type { Metadata } from 'next';
+import './globals.css';
+export const metadata: Metadata = { title: 'Almega · MiniERP', description: 'Clientes, proyectos y facturación en un único espacio de trabajo.' };
+export default function RootLayout({ children }: { children: React.ReactNode }) { return <html lang="es"><body>{children}</body></html>; }
